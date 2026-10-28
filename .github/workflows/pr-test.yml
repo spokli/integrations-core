@@ -7,6 +7,16 @@ on:
         required: true
         type: string
 
+      ddev-version:
+        description: "PyPI ddev version specifier for non-core callers"
+        required: false
+        default: ""
+        type: string
+      integrations-core-ref:
+        description: "Revision for shared actions, test scripts and matrix computation"
+        required: false
+        default: "master"
+        type: string
       setup-env-vars:
         required: false
         default: ""
@@ -30,6 +40,7 @@ jobs:
     if: github.event_name != 'merge_group'
     with:
       repo: "${{ inputs.repo }}"
+      integrations-core-ref: ${{ inputs.integrations-core-ref }}
 
   test:
     needs:
@@ -60,6 +71,8 @@ jobs:
       setup-env-vars: "${{ inputs.setup-env-vars }}"
       python-version: "${{ inputs.python-version }}"
       pytest-args: ${{ inputs.pytest-args }}
+      ddev-version: ${{ inputs.ddev-version }}
+      integrations-core-ref: ${{ inputs.integrations-core-ref }}
     secrets: inherit
     permissions:
       # needed for compute-matrix in test-target.yml
@@ -96,6 +109,8 @@ jobs:
       setup-env-vars: "${{ inputs.setup-env-vars }}"
       python-version: "${{ inputs.python-version }}"
       pytest-args: ${{ inputs.pytest-args }}
+      ddev-version: ${{ inputs.ddev-version }}
+      integrations-core-ref: ${{ inputs.integrations-core-ref }}
       context: "pr"
     secrets: inherit
     permissions:

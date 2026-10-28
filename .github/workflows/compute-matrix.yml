@@ -6,6 +6,11 @@ on:
       repo:
         required: true
         type: string
+      integrations-core-ref:
+        description: "Revision for matrix computation; use a commit SHA to freeze it"
+        required: false
+        default: "master"
+        type: string
     outputs:
       matrix:
         value: ${{ jobs.compute.outputs.data }}
@@ -45,11 +50,21 @@ jobs:
         echo "MERGE_BASE=$merge_base" >> "$GITHUB_ENV"
         git -c protocol.version=2 fetch --no-tags --no-recurse-submodules --filter=blob:none origin "$merge_base"
 
-    - name: Fetch computation script
+    - name: Checkout computation script
+      if: inputs.repo != 'core'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: DataDog/integrations-core
+        ref: ${{ inputs.integrations-core-ref }}
+        fetch-depth: 1
+        sparse-checkout: ddev/src/ddev/utils/scripts
+        path: core-temp
+
+    - name: Install computation script
       if: inputs.repo != 'core'
       run: |-
-        mkdir -p $(dirname ${{ env.MATRIX_SCRIPT }})
-        curl -sLo ${{ env.MATRIX_SCRIPT }} https://raw.githubusercontent.com/DataDog/integrations-core/master/${{ env.MATRIX_SCRIPT }}
+        mkdir -p "$(dirname "$MATRIX_SCRIPT")"
+        cp "core-temp/$MATRIX_SCRIPT" "$MATRIX_SCRIPT"
 
     - name: Compute
       id: compute

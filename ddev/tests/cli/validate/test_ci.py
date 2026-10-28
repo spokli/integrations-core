@@ -6,6 +6,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ddev.cli.validate.ci import _get_test_workflow_settings
+
+TEST_WORKFLOW_PREFIX = 'DataDog/integrations-core/.github/workflows/test-target.yml@'
+
 
 def test_missing_hatch_toml(ddev, repository, helpers):
     import os
@@ -188,3 +192,102 @@ def test_minimum_base_package(ddev, repository, helpers, repo_name, config_file)
 
     result = ddev('validate', 'ci')
     assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize('repo_name', ['extras', 'marketplace', 'internal'])
+@pytest.mark.parametrize('pin_source', ['job', 'input'])
+def test_ci_generator_preserves_tooling_pins(ddev, repository, config_file, repo_name: str, pin_source: str):
+    config_file.model.repos[repo_name] = str(repository.path)
+    config_file.model.repo = repo_name
+    config_file.save()
+    expected = {}
+    for filename, revision in [('test-all.yml', 'a' * 40), ('test-all-windows.yml', 'b' * 40)]:
+        path = repository.path / '.github/workflows' / filename
+        workflow = yaml.safe_load(path.read_text())
+        workflow['on'] = workflow.pop(True)
+        inputs = workflow['on']['workflow_call']['inputs']
+        for job in workflow['jobs'].values():
+            job['uses'] = f'{TEST_WORKFLOW_PREFIX}{revision}'
+            if pin_source == 'job':
+                job['with'].update({'ddev-version': '==20.1.0', 'integrations-core-ref': revision})
+        if pin_source == 'input':
+            inputs.update(
+                {
+                    'ddev-version': {'type': 'string', 'default': '==20.1.0'},
+                    'integrations-core-ref': {'type': 'string', 'default': revision},
+                }
+            )
+        else:
+            # New jobs must inherit the workflow's existing pins too.
+            del workflow['jobs'][next(iter(workflow['jobs']))]
+        path.write_text(yaml.safe_dump(workflow, sort_keys=False))
+        expected[filename] = revision
+
+    result = ddev('validate', 'ci', '--sync')
+    assert result.exit_code == 0, result.output
+    for filename, revision in expected.items():
+        workflow = yaml.safe_load((repository.path / '.github/workflows' / filename).read_text())
+        for job in workflow['jobs'].values():
+            assert job['uses'] == f'{TEST_WORKFLOW_PREFIX}{revision}'
+            assert job['with']['ddev-version'] == ('==20.1.0' if pin_source == 'job' else '${{ inputs.ddev-version }}')
+            assert job['with']['integrations-core-ref'] == (
+                revision if pin_source == 'job' else '${{ inputs.integrations-core-ref }}'
+            )
+
+    result = ddev('validate', 'ci')
+    assert result.exit_code == 0, result.output
+
+
+def test_ci_generator_preserves_partially_pinned_jobs(ddev, repository, config_file):
+    config_file.model.repos['extras'] = str(repository.path)
+    config_file.model.repo = 'extras'
+    config_file.save()
+    result = ddev('validate', 'ci', '--sync')
+    assert result.exit_code == 0, result.output
+
+    path = repository.path / '.github/workflows/test-all.yml'
+    workflow = yaml.safe_load(path.read_text())
+    workflow['on'] = workflow.pop(True)
+    expected = {}
+    for index, (job_id, job) in enumerate(workflow['jobs'].items()):
+        revision = ('a' if index == 0 else 'b') * 40
+        job['uses'] = f'{TEST_WORKFLOW_PREFIX}{revision}'
+        pins = {} if index == 0 else {'ddev-version': '==20.1.0', 'integrations-core-ref': revision}
+        job['with'].update(pins)
+        expected[job_id] = (job['uses'], pins)
+    path.write_text(yaml.safe_dump(workflow, sort_keys=False))
+
+    result = ddev('validate', 'ci', '--sync')
+    assert result.exit_code == 0, result.output
+    generated = yaml.safe_load(path.read_text())
+    for job_id, (reference, pins) in expected.items():
+        job = generated['jobs'][job_id]
+        assert job['uses'] == reference
+        assert {
+            field: job['with'][field] for field in ('ddev-version', 'integrations-core-ref') if field in job['with']
+        } == pins
+
+    result = ddev('validate', 'ci')
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize('field', ['uses', 'ddev-version', 'integrations-core-ref'])
+def test_ci_generator_requires_a_choice_for_new_jobs_with_mixed_pins(field: str):
+    import click
+
+    jobs = {
+        'first': {'uses': f'{TEST_WORKFLOW_PREFIX}release/stable', 'with': {}},
+        'second': {'uses': f'{TEST_WORKFLOW_PREFIX}release/stable', 'with': {}},
+    }
+    if field == 'uses':
+        jobs['second']['uses'] = f'{TEST_WORKFLOW_PREFIX}release/next'
+    else:
+        jobs['first']['with'][field] = '==20.1.0' if field == 'ddev-version' else 'a' * 40
+        jobs['second']['with'][field] = '==20.2.0' if field == 'ddev-version' else 'b' * 40
+    workflow = {'jobs': jobs}
+
+    reference, settings = _get_test_workflow_settings(workflow, 'second')
+    assert reference == jobs['second']['uses']
+    assert settings == jobs['second']['with']
+    with pytest.raises(click.ClickException, match='Choose .*new job `new`'):
+        _get_test_workflow_settings(workflow, 'new')
